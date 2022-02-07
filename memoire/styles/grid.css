@@ -1,0 +1,59 @@
+:root {
+    --content-width: 1256px;
+    /*--margin-width: 16px;*/
+    --min-margin-width: 36px;
+    --gutter-width: 36px;
+
+    /*--col-width: calc((var(--full-page-width) - 2 * var(--margin-width) - 11 * var(--gutter-width)) / 12);*/
+    --col-width: calc((var(--content-width) - 11 * var(--gutter-width) - 2 * var(--min-margin-width)) / 12);
+
+    --margin-width: calc((100vw - var(--content-width)) / 2 + var(--min-margin-width));
+
+    --col-1: calc(var(--col-width));
+    --col-2: calc(var(--col-width) * 2 + var(--gutter-width));
+    --col-3: calc(var(--col-width) * 3 + var(--gutter-width) * 2);
+    --col-4: calc(var(--col-width) * 4 + var(--gutter-width) * 3);
+    --col-5: calc(var(--col-width) * 5 + var(--gutter-width) * 4);
+    --col-6: calc(var(--col-width) * 6 + var(--gutter-width) * 5);
+    --col-7: calc(var(--col-width) * 7 + var(--gutter-width) * 6);
+    --col-8: calc(var(--col-width) * 8 + var(--gutter-width) * 7);
+    --col-9: calc(var(--col-width) * 9 + var(--gutter-width) * 8);
+    --col-10: calc(var(--col-width) * 10 + var(--gutter-width) * 9);
+    --col-11: calc(var(--col-width) * 11 + var(--gutter-width) * 10);
+    --col-12: calc(var(--col-width) * 12 + var(--gutter-width) * 11);
+    --col-max: calc(100vw - 2 * var(--min-margin-width));
+
+    --offset-min: calc(var(--min-margin-width));
+    --offset-0: calc(var(--margin-width));
+    --offset-1: calc(var(--margin-width) + var(--col-width) + var(--gutter-width) * 1);
+    --offset-2: calc(var(--margin-width) + var(--col-width) * 2 + var(--gutter-width) * 2);
+    --offset-3: calc(var(--margin-width) + var(--col-width) * 3 + var(--gutter-width) * 3);
+    --offset-4: calc(var(--margin-width) + var(--col-width) * 4 + var(--gutter-width) * 4);
+    --offset-5: calc(var(--margin-width) + var(--col-width) * 5 + var(--gutter-width) * 5);
+    --offset-6: calc(var(--margin-width) + var(--col-width) * 6 + var(--gutter-width) * 6);
+    --offset-7: calc(var(--margin-width) + var(--col-width) * 7 + var(--gutter-width) * 7);
+    --offset-8: calc(var(--margin-width) + var(--col-width) * 8 + var(--gutter-width) * 8);
+    --offset-9: calc(var(--margin-width) + var(--col-width) * 9 + var(--gutter-width) * 9);
+    --offset-10: calc(var(--margin-width) + var(--col-width) * 10 + var(--gutter-width) * 10);
+    --offset-11: calc(var(--margin-width) + var(--col-width) * 11 + var(--gutter-width) * 11);
+    --offset-12: calc(var(--margin-width) + var(--col-width) * 12 + var(--gutter-width) * 12);
+    --offset-max: calc(100vw - var(--min-margin-width));
+}
+
+
+body {
+    position: relative;
+    /*margin-left: var(--margin-width);*/
+    /*margin-right: var(--margin-width);*/
+    /*min-width: calc(var(--col-width) * 12 + var(--gutter-width) * 11);*/
+    /*min-height: 768px;*/
+
+    /*height: 100%;*/
+
+    /*min-width: var(--full-page-width);*/
+    min-height: 100vh;
+    width: 100%;
+    height: 100%;
+    padding-left: var(--margin-width);
+    padding-right: var(--margin-width);
+}

@@ -1,0 +1,155 @@
+/*
+/Layout Properties (position, float, clear, display)/
+/Box Model Properties (width, height, margin, padding)/
+/Visual Properties (color, background, border, box-shadow)/
+/Typography Properties (font-size, font-family, text-align, text-transform)/
+/Misc Properties (cursor, overflow, z-index)/
+/Final Layers (animation, transition, filter)/*/
+:root {
+    --main-bg-color: #f1f1f1;
+    --main-text-color: #181818;
+    transition: 0.9s;
+    overflow-x: hidden;
+
+}
+
+:root.externalisation {
+    --main-bg-color: #f1edeb;
+    --main-text-color: #220d0d;
+    --icon-color: #100606;
+
+    /*--full-page-width: 1920px;*/
+
+}
+
+:root.limitations {
+    --main-bg-color: #f3fced;
+    --main-text-color: #0d0b22;
+    --icon-color: #040410;
+
+}
+
+:root.illusions {
+    --main-bg-color: #f0fafa;
+    --main-text-color: #210c1f;
+    --icon-color: #10040e;
+
+}
+
+:root.defuturation {
+    --main-bg-color: #1c0b0e;
+    --main-text-color: #ebf6f4;
+    --icon-color: #080305;
+}
+
+:root.directions {
+    --main-bg-color: #07070e;
+    --main-text-color: #fcf6fd;
+    --icon-color: #dfcfe0;
+
+}
+
+:root.comprehension {
+    --main-bg-color: #020907;
+    --main-text-color: #e7e4f5;
+    --icon-color: #c4d7c0;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    /*debug purposes*/
+    /*outline: 1px solid red;*/
+    /*outline-offset: -1px;*/
+}
+
+html {
+    background: var(--main-bg-color);
+    font-size: 62.5%; /*1rem=10px* on computer*/
+    min-width: 1256px;
+    /*width: var(--full-page-width);*/
+    /*overflow-x: hidden;*/
+}
+
+body {
+    /*margin-top: 100vh;*/
+    font-family: "Space Grotesk", Helvetica, sans-serif;
+    letter-spacing: -0.05rem;
+    color: var(--main-text-color);
+    font-size: 2rem;
+    line-height: 2.4rem;
+    font-feature-settings: "kern";
+    /*overflow-x: hidden;*/
+
+
+}
+
+p {
+    font-size: 2rem;
+    line-height: 2.4rem;
+}
+
+em {
+    display: inline-block;
+
+    font-size: 4.8rem;
+    line-height: 6.4rem;
+    font-weight: 500;
+    font-style: normal;
+}
+
+b {
+    font-size: inherit;
+    font-weight: 500;
+}
+
+/*b {*/
+/*    display: inline-block;*/
+
+/*    font-size: 2.4rem;*/
+/*    line-height: 3.2rem;*/
+/*    font-weight: 500;*/
+/*    font-style: normal;*/
+/*}*/
+
+small {
+    display: inline-block;
+
+    font-size: 1.6rem;
+    line-height: 2rem;
+}
+
+br {
+    line-height: 2.4rem;
+}
+
+div {
+    position: absolute;
+}
+
+section {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+cite {
+    text-decoration: none;
+    font-style: normal;
+}
+
+h1 {
+    font-family: "Cascadeur";
+    font-size: 16rem;
+    line-height: 24rem;
+    font-weight: normal;
+    width: 100vw;
+    text-align: center;
+}
+
+a {
+    color: inherit;
+}
