@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<title>Fluidwise Palm</title>
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<style>
+		body { margin: 0; overflow: hidden; background: #000; }
+		/* circular, centered bottom button */
+		#startHandsBtn {
+			position: fixed;
+			left: 50%;
+			bottom: 20px;
+			transform: translateX(-50%);
+			z-index: 10;
+			width: 64px;
+			height: 64px;
+			border-radius: 50%;
+			background: rgba(255,255,255,0.08);
+			color: #fff;
+			border: 1px solid rgba(255,255,255,0.12);
+			display:flex;
+			align-items:center;
+			justify-content:center;
+			cursor: pointer;
+			font-family: sans-serif;
+			backdrop-filter: blur(4px);
+			font-size: 24px;
+		}
+		@media (max-width:420px){
+			#startHandsBtn { width:56px; height:56px; bottom:12px; }
+		}
+	</style>
+</head>
+<body>
+<button id="startHandsBtn">🤚</button>
+
+<!-- smoothing shader -->
+<script id="smoothFragmentShader" type="x-shader/x-fragment">
+	uniform sampler2D smoothTexture;
+	void main() {
+	  vec2 cellSize = 1.0 / resolution.xy;
+	  vec2 uv = gl_FragCoord.xy * cellSize;
+	  vec4 textureValue = texture2D( smoothTexture, uv );
+	  textureValue += texture2D( smoothTexture, uv + vec2( 0.0, cellSize.y ) );
+	  textureValue += texture2D( smoothTexture, uv + vec2( 0.0, - cellSize.y ) );
+	  textureValue += texture2D( smoothTexture, uv + vec2( cellSize.x, 0.0 ) );
+	  textureValue += texture2D( smoothTexture, uv + vec2( - cellSize.x, 0.0 ) );
+	  textureValue /= 5.0;
+	  gl_FragColor = textureValue;
+	}
+</script>
+
+<!-- read water level shader (unchanged) -->
+<script id="readWaterLevelFragmentShader" type="x-shader/x-fragment">
+	uniform vec2 point1;
+	uniform sampler2D levelTexture;
+	float shift_right( float v, float amt ) { v = floor( v ) + 0.5; return floor( v / exp2( amt ) ); }
+	float shift_left( float v, float amt ) { return floor( v * exp2( amt ) + 0.5 ); }
+	float mask_last( float v, float bits ) { return mod( v, shift_left( 1.0, bits ) ); }
+	float extract_bits( float num, float from, float to ) {
+	  from = floor( from + 0.5 ); to = floor( to + 0.5 );
+	  return mask_last( shift_right( num, from ), to - from );
+	}
+	vec4 encode_float( float val ) {
+	  if ( val == 0.0 ) return vec4( 0, 0, 0, 0 );
+	  float sign = val > 0.0 ? 0.0 : 1.0;
+	  val = abs( val );
+	  float exponent = floor( log2( val ) );
+	  float biased_exponent = exponent + 127.0;
+	  float fraction = ( ( val / exp2( exponent ) ) - 1.0 ) * 8388608.0;
+	  float t = biased_exponent / 2.0;
+	  float last_bit_of_biased_exponent = fract( t ) * 2.0;
+	  float remaining_bits_of_biased_exponent = floor( t );
+	  float byte4 = extract_bits( fraction, 0.0, 8.0 ) / 255.0;
+	  float byte3 = extract_bits( fraction, 8.0, 16.0 ) / 255.0;
+	  float byte2 = ( last_bit_of_biased_exponent * 128.0 + extract_bits( fraction, 16.0, 23.0 ) ) / 255.0;
+	  float byte1 = ( sign * 128.0 + remaining_bits_of_biased_exponent ) / 255.0;
+	  return vec4( byte4, byte3, byte2, byte1 );
+	}
+	void main() {
+	  vec2 cellSize = 1.0 / resolution.xy;
+	  float waterLevel = texture2D( levelTexture, point1 ).x;
+	  vec2 normal = vec2(
+		( texture2D( levelTexture, point1 + vec2( - cellSize.x, 0 ) ).x - texture2D( levelTexture, point1 + vec2( cellSize.x, 0 ) ).x ) * WIDTH / BOUNDS,
+		( texture2D( levelTexture, point1 + vec2( 0, - cellSize.y ) ).x - texture2D( levelTexture, point1 + vec2( 0, cellSize.y ) ).x ) * WIDTH / BOUNDS );
+	  if ( gl_FragCoord.x < 1.5 ) {
+		gl_FragColor = encode_float( waterLevel );
+	  } else if ( gl_FragCoord.x < 2.5 ) {
+		gl_FragColor = encode_float( normal.x );
+	  } else if ( gl_FragCoord.x < 3.5 ) {
+		gl_FragColor = encode_float( normal.y );
+	  } else {
+		gl_FragColor = encode_float( 0.0 );
+	  }
+	}
+</script>
+
+<script type="importmap">
+	{
+	  "imports": {
+		"three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+		"three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+	  }
+	}
+</script>
+
+<!--<script type="importmap">-->
+<!--	{-->
+<!--	  "imports": {-->
+<!--		"three": "../build/three.module.js",-->
+<!--		"three/addons/": "./jsm/"-->
+<!--	  }-->
+<!--	}-->
+<!--</script>-->
+
+
+
+<!-- MediaPipe (Hands) CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script type="module">
+	import * as THREE from 'three';
+	import Stats from 'three/addons/libs/stats.module.js';
+	import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+	import { GPUComputationRenderer } from 'three/addons/misc/GPUComputationRenderer.js';
+	import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+	import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+	import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+	import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+	import { RectAreaLightHelper } from 'three/addons/helpers/RectAreaLightHelper.js';
+
+	/* ------------------- adaptive config ------------------- */
+	const isMobile = /Mobi|Android/i.test(navigator.userAgent) || window.innerWidth < 800;
+	const WIDTH = isMobile ? 384 : 512;
+	const BOUNDS = 6;
+	const BOUNDS_HALF = BOUNDS * 0.5;
+	const MAX_TOUCHES = isMobile ? 20 : 32;
+	const USE_FULL_LANDMARKS = true;
+
+	/* ------------------- shaders (unchanged) ------------------- */
+	const shaderChange = {
+		heightmap_frag: /* glsl */`
+	#include <common>
+	uniform vec2 mousePos;
+	uniform float mouseSizeClick;
+	uniform float mouseSizeHand;
+	uniform float deepClick;
+	uniform float deepHand;
+	uniform float viscosity;
+	uniform vec2 touches[${MAX_TOUCHES}];
+	uniform int touchCount;
+	void main() {
+	  vec2 cellSize = 1.0 / resolution.xy;
+	  vec2 uv = gl_FragCoord.xy * cellSize;
+	  vec4 heightmapValue = texture2D( heightmap, uv );
+	  vec4 north = texture2D( heightmap, uv + vec2(0.0, cellSize.y) );
+	  vec4 south = texture2D( heightmap, uv + vec2(0.0, -cellSize.y) );
+	  vec4 east  = texture2D( heightmap, uv + vec2(cellSize.x, 0.0) );
+	  vec4 west  = texture2D( heightmap, uv + vec2(-cellSize.x, 0.0) );
+	  float newHeight = ((north.x + south.x + east.x + west.x) * 0.5 - (heightmapValue.y)) * viscosity;
+	  if ( mousePos.x < 9999.0 ) {
+	    float mphase = length((uv - vec2(0.5)) * BOUNDS - vec2(mousePos.x, -mousePos.y));
+	    float mousePhase = clamp(mphase * 3.14159265 / mouseSizeClick, 0.0, 3.14159265);
+	    newHeight -= (cos(mousePhase) + 1.0) * deepClick;
+	  }
+	  for (int i = 0; i < ${MAX_TOUCHES}; i++) {
+	    if (i >= touchCount) break;
+	    vec2 tp = touches[i];
+	    float tphase = length((uv - vec2(0.5)) * BOUNDS - tp);
+	    float tPhase = clamp(tphase * 3.14159265 / (mouseSizeHand * 0.85), 0.0, 3.14159265);
+	    newHeight -= (cos(tPhase) + 1.0) * (deepHand * 0.85);
+	  }
+	  heightmapValue.y = heightmapValue.x;
+	  heightmapValue.x = newHeight;
+	  gl_FragColor = heightmapValue;
+	}
+	`,
+		common: /* glsl */`
+	#include <common>
+	uniform sampler2D heightmap;
+	`,
+		beginnormal_vertex: /* glsl */`
+	vec2 cellSize = vec2( 1.0 / WIDTH, 1.0 / WIDTH );
+	vec3 objectNormal = vec3(
+	  ( texture2D( heightmap, uv + vec2( - cellSize.x, 0 ) ).x - texture2D( heightmap, uv + vec2( cellSize.x, 0 ) ).x ) * WIDTH / BOUNDS,
+	  ( texture2D( heightmap, uv + vec2( 0, - cellSize.y ) ).x - texture2D( heightmap, uv + vec2( 0, cellSize.y ) ).x ) * WIDTH / BOUNDS,
+	  1.0 );
+	#ifdef USE_TANGENT
+	  vec3 objectTangent = vec3( tangent.xyz );
+	#endif
+	`,
+		begin_vertex: /* glsl */`
+	float heightValue = texture2D( heightmap, uv ).x;
+	vec3 transformed = vec3( position.x, position.y, heightValue );
+	#ifdef USE_ALPHAHASH
+	  vPosition = vec3( position );
+	#endif
+	`
+	};
+
+	/* ------------------- app state ------------------- */
+	let tmpHeightmap = null;
+	let duckModel = null;
+
+	let container, stats;
+	let camera, scene, renderer;
+	let mousedown = false;
+	const mouseCoords = new THREE.Vector2();
+	const raycaster = new THREE.Raycaster();
+
+	let sun, waterMesh, meshRay, gpuCompute, heightmapVariable, smoothShader;
+	let readWaterLevelShader, readWaterLevelRenderTarget, readWaterLevelImage;
+	const simplex = new SimplexNoise();
+
+	let frame = 0;
+	const effectController = {
+		mouseSizeClick: 0.15,
+		mouseSizeHand: 0.35,
+		mouseDeepClick: 0.01,
+		// significantly lower base hand depth for calmer default
+		mouseDeepHand: 0.005,
+		viscosity: 0.85,
+		speed: 8,
+		wireframe: false,
+		handDeepScale: 1.1,
+		handLightMultiplier: 2.0,
+		mobileSensitivity: 0.6,
+		mobileSizeFactor: 1.0,
+		mobileLightFactor: 5.0
+	};
+
+	let hands = null;
+	let handsCamera = null;
+	const videoElement = document.createElement('video');
+	videoElement.style.display = 'none';
+	document.body.appendChild(videoElement);
+
+	const detectedTouches = [];
+	let avgHandDistance = null;
+	let avgHandZ = null;
+	let avgHandSpread = null;
+	let avgHandOpen = 0.0;
+	let avgHandPos = null;
+	let sunTargetPos = new THREE.Vector3();
+	const sunBaseOffset = new THREE.Vector3(0, 0.8, 0);
+
+	let rectLight = null, rectLight2 = null;
+	let rectLightHelper = null, rectLightHelper2 = null;
+	let rectLight2BaseIntensity = 0.04;
+
+	let clickPower = 0.1;
+	const clickGrowRate = 1.01;
+	const clickDecayRate = 1.8;
+	const clickIntensityBoost = 2;
+
+	const _tmpNdc = new THREE.Vector3();
+	const _tmpWorld = new THREE.Vector3();
+	const _tmpDir = new THREE.Vector3();
+
+	const computeEveryNFrames = isMobile ? 2 : 1;
+	let lastTime = performance.now();
+
+	/* mobile */
+	const mobileSplashes = [];
+	const MOBILE_SPLASH_LIFE = 0.9;
+	const MOBILE_SHAKE_THRESHOLD = 1.4;
+	let lastAccel = { x: 0, y: 0, z: 0 };
+	let lastAccelTime = 0;
+	let mobileEnergy = 0.0;
+
+	const fingerJointGroups = [
+		[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]
+	];
+
+	let ctrlMouseDeepHand = null;
+	let ctrlMouseDeepClick = null;
+
+	/* ------- hand-lock tuning (changed) ------- */
+	// stability window tracked by time
+	const HAND_LOCK_HOLD = 2.0;            // seconds required to trigger
+	const HAND_MOVE_THRESHOLD = 0.08;      // fraction of BOUNDS (stricter)
+	const HAND_SPREAD_THRESHOLD = 0.14;    // avg spread over landmarks (image-space)
+	const HAND_OPEN_FRACTION = 0.9;        // >= 90% fingers considered open
+	const HAND_LOCK_FLASH_INTENSITY = 5.0; // flash intensity
+	const HAND_LOCK_COOLDOWN = 2.5;        // short cooldown after pulse
+	const HAND_IMPRINT_LIFE = 0.9;         // imprint life (seconds, <= 2s)
+
+	let handTipHistory = []; // {t, x, y} in image coords
+	let lastAvgHandPos = null;
+	let handStabilityTimer = 0;
+	let handLockProgress = 0;
+	let handLocked = false;
+	let handLockCooldown = 0;
+	const HAND_STABILITY_MAX_DIST = 0.02; // maximum movement of tip centroid over window (image coords)
+	let handImprints = [];
+	let frozenTouches = null;
+	let frozenTimer = 0.0;
+
+	/* ------- place fillTexture above initWater to avoid not-defined errors ------- */
+	function fillTexture(texture) {
+		const waterMaxHeight = 0.1;
+		function noise(x, y) {
+			let multR = waterMaxHeight;
+			let mult = 0.025;
+			let r = 0;
+			for (let i = 0; i < 15; i++) {
+				r += multR * simplex.noise(x * mult, y * mult);
+				multR *= 0.53 + 0.025 * i;
+				mult *= 1.25;
+			}
+			return r;
+		}
+		const pixels = texture.image.data;
+		let p = 0;
+		for (let j = 0; j < WIDTH; j++) {
+			for (let i = 0; i < WIDTH; i++) {
+				const x = i * 128 / WIDTH;
+				const y = j * 128 / WIDTH;
+				pixels[p + 0] = noise(x, y);
+				pixels[p + 1] = pixels[p + 0];
+				pixels[p + 2] = 0;
+				pixels[p + 3] = 1;
+				p += 4;
+			}
+		}
+	}
+
+	init();
+
+	async function init() {
+		container = document.createElement('div');
+		document.body.appendChild(container);
+
+		camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+		camera.position.set(0, 2.0, 0);
+		camera.lookAt(0, 0, 0);
+
+		scene = new THREE.Scene();
+
+		sun = new THREE.PointLight(0xfff6e0, 0.0, 15, 2);
+		sun.position.set(0, 0.7, 0);
+		scene.add(sun);
+
+		RectAreaLightUniformsLib.init();
+		const rectWidth = 30;
+		const rectHeight = 20;
+		const rectIntensity1 = 10;
+		const rectIntensity2 = rectLight2BaseIntensity;
+
+		rectLight = new THREE.RectAreaLight(0xd9e0ff, rectIntensity1, rectWidth, rectHeight);
+		rectLight.position.set(0, -3.3, 36.1);
+		rectLight.lookAt(0, 0, -67.8);
+		scene.add(rectLight);
+		rectLightHelper = new RectAreaLightHelper(rectLight);
+		rectLight.add(rectLightHelper);
+
+		rectLight2 = new THREE.RectAreaLight(0xd9e0ff, rectIntensity2, rectWidth, rectHeight);
+		rectLight2.position.set(0, 9, 0);
+		rectLight2.lookAt(0, 0, 1.7);
+		scene.add(rectLight2);
+		rectLightHelper2 = new RectAreaLightHelper(rectLight2);
+		rectLight2.add(rectLightHelper2);
+
+		renderer = new THREE.WebGLRenderer({ antialias: true });
+		renderer.setPixelRatio( Math.min(window.devicePixelRatio || 1, 1.5) );
+		renderer.setSize(window.innerWidth, window.innerHeight);
+		renderer.toneMapping = THREE.ACESFilmicToneMapping;
+		renderer.toneMappingExposure = 0.6;
+		container.appendChild(renderer.domElement);
+
+		stats = new Stats();
+		// container.appendChild(stats.dom);
+
+		container.style.touchAction = 'none';
+		container.addEventListener('pointermove', onPointerMove);
+		container.addEventListener('pointerdown', onPointerDown);
+		container.addEventListener('pointerup', onPointerUp);
+		window.addEventListener('resize', onWindowResize);
+
+		const startHandsBtn = document.getElementById('startHandsBtn');
+		startHandsBtn.addEventListener('click', async () => {
+			if (isMobile) {
+				await enableMotionSensors();
+				startHandsBtn.style.display = 'none';
+			} else {
+				if (!hands) startHands();
+				startHandsBtn.style.display = 'none';
+			}
+		});
+		if (isMobile) startHandsBtn.textContent = 'Enable Motion';
+
+		const glbloader = new GLTFLoader().setPath('models/gltf/');
+		glbloader.setDRACOLoader(new DRACOLoader().setDecoderPath('jsm/libs/draco/gltf/'));
+		try {
+			const model = await glbloader.loadAsync('duck.glb');
+			duckModel = model.scene.children[0];
+			duckModel.receiveShadow = true;
+			duckModel.castShadow = true;
+		} catch (e) { duckModel = null; }
+
+		scene.background = new THREE.Color(0x000728);
+
+		const gui = new GUI();
+		gui.domElement.style.right = '0px';
+		gui.add(effectController, 'mouseSizeClick', 0.05, 1.0, 0.01).name('mouseSizeClick');
+		gui.add(effectController, 'mouseSizeHand', 0.05, 1.0, 0.01).name('mouseSizeHand');
+		ctrlMouseDeepClick = gui.add(effectController, 'mouseDeepClick', 0.0001, 1.0, 0.0001).name('mouseDeepClick');
+		ctrlMouseDeepHand = gui.add(effectController, 'mouseDeepHand', 0.0001, 1.0, 0.0001).name('mouseDeepHand');
+
+		gui.add(effectController, 'viscosity', 0.85, 0.999, 0.001);
+		gui.add(effectController, 'speed', 1, 10, 1);
+		gui.add(effectController, 'wireframe').onChange(v => { if (waterMesh) waterMesh.material.wireframe = v; });
+
+		const handFolder = gui.addFolder('Hand Depth Mapping');
+		handFolder.add(effectController, 'handDeepScale', 0.0, 6.0, 0.01).name('handDeepScale');
+		handFolder.add(effectController, 'handLightMultiplier', 1.0, 6.0, 0.01).name('handLightMul');
+		handFolder.open();
+
+		const mobileFolder = gui.addFolder('Mobile Shake Tuning');
+		mobileFolder.add(effectController, 'mobileSensitivity', 0.05, 2.0, 0.01).name('sensitivity');
+		mobileFolder.add(effectController, 'mobileSizeFactor', 0.5, 3.0, 0.01).name('sizeFactor');
+		mobileFolder.add(effectController, 'mobileLightFactor', 0.0, 5.0, 0.01).name('lightFactor');
+		mobileFolder.open();
+
+		const rectFolder1 = gui.addFolder('Rect Light 1');
+		rectFolder1.add(rectLight, 'intensity', 0, 10, 0.01).name('intensity');
+		rectFolder1.add(rectLight.position, 'x', -100, 100, 0.1).name('posX');
+		rectFolder1.add(rectLight.position, 'y', -100, 100, 0.1).name('posY');
+		rectFolder1.add(rectLight.position, 'z', -200, 200, 0.1).name('posZ');
+		rectFolder1.close();
+
+		const rectFolder2 = gui.addFolder('Rect Light 2');
+		rectFolder2.add(rectLight2, 'intensity', 0, 10, 0.01).name('intensity');
+		rectFolder2.add(rectLight2.position, 'x', -100, 100, 0.1).name('posX');
+		rectFolder2.add(rectLight2.position, 'y', -100, 100, 0.1).name('posY');
+		rectFolder2.add(rectLight2.position, 'z', -200, 200, 0.1).name('posZ');
+		rectFolder2.close();
+
+		gui.domElement.style.display = 'none';
+		initWater();
+		renderer.setAnimationLoop(animate);
+	}
+
+	function initWater() {
+		const geometry = new THREE.PlaneGeometry(BOUNDS, BOUNDS, WIDTH - 1, WIDTH - 1);
+		const material = new WaterMaterial({
+			color: 0xfffbff,
+			metalness: 1,
+			roughness: 0.2,
+			transparent: true,
+			opacity: 0.95,
+			side: THREE.DoubleSide
+		});
+		waterMesh = new THREE.Mesh(geometry, material);
+		waterMesh.rotation.x = -Math.PI * 0.5;
+		waterMesh.matrixAutoUpdate = false;
+		waterMesh.updateMatrix();
+		scene.add(waterMesh);
+
+		const geometryRay = new THREE.PlaneGeometry(BOUNDS, BOUNDS, 1, 1);
+		meshRay = new THREE.Mesh(geometryRay, new THREE.MeshBasicMaterial({ color: 0xffffff, visible: false }));
+		meshRay.rotation.x = -Math.PI / 2;
+		meshRay.matrixAutoUpdate = false;
+		meshRay.updateMatrix();
+		scene.add(meshRay);
+
+		gpuCompute = new GPUComputationRenderer(WIDTH, WIDTH, renderer);
+		try {
+			if (gpuCompute && typeof gpuCompute.setDataType === 'function') {
+				if (renderer.capabilities.isWebGL2) gpuCompute.setDataType(THREE.FloatType);
+				else gpuCompute.setDataType(THREE.HalfFloatType);
+			}
+		} catch (e) { /* ignore */ }
+
+		const heightmap0 = gpuCompute.createTexture();
+		fillTexture(heightmap0);
+
+		heightmapVariable = gpuCompute.addVariable('heightmap', shaderChange.heightmap_frag, heightmap0);
+		gpuCompute.setVariableDependencies(heightmapVariable, [heightmapVariable]);
+
+		heightmapVariable.material.uniforms['mousePos'] = { value: new THREE.Vector2(10000, 10000) };
+		heightmapVariable.material.uniforms['mouseSizeClick'] = { value: effectController.mouseSizeClick };
+		heightmapVariable.material.uniforms['mouseSizeHand'] = { value: effectController.mouseSizeHand };
+		heightmapVariable.material.uniforms['deepClick'] = { value: effectController.mouseDeepClick };
+		heightmapVariable.material.uniforms['deepHand'] = { value: effectController.mouseDeepHand };
+		heightmapVariable.material.uniforms['viscosity'] = { value: effectController.viscosity };
+		heightmapVariable.material.defines.BOUNDS = BOUNDS.toFixed(1);
+
+		const touchArr = [];
+		for (let i = 0; i < MAX_TOUCHES; i++) touchArr.push(new THREE.Vector2(10000, 10000));
+		heightmapVariable.material.uniforms['touches'] = { value: touchArr };
+		heightmapVariable.material.uniforms['touchCount'] = { value: 0 };
+
+		const error = gpuCompute.init();
+		if (error !== null) console.error(error);
+
+		smoothShader = gpuCompute.createShaderMaterial(document.getElementById('smoothFragmentShader').textContent, { smoothTexture: { value: null } });
+
+		readWaterLevelShader = gpuCompute.createShaderMaterial(document.getElementById('readWaterLevelFragmentShader').textContent, {
+			point1: { value: new THREE.Vector2() },
+			levelTexture: { value: null }
+		});
+		readWaterLevelShader.defines.WIDTH = WIDTH.toFixed(1);
+		readWaterLevelShader.defines.BOUNDS = BOUNDS.toFixed(1);
+
+		readWaterLevelImage = new Uint8Array(4 * 1 * 4);
+		readWaterLevelRenderTarget = new THREE.WebGLRenderTarget(4, 1, {
+			wrapS: THREE.ClampToEdgeWrapping,
+			wrapT: THREE.ClampToEdgeWrapping,
+			minFilter: THREE.NearestFilter,
+			magFilter: THREE.NearestFilter,
+			format: THREE.RGBAFormat,
+			type: THREE.UnsignedByteType,
+			depthBuffer: false
+		});
+	}
+
+	function onWindowResize() {
+		camera.aspect = window.innerWidth / window.innerHeight;
+		camera.updateProjectionMatrix();
+		renderer.setSize(window.innerWidth, window.innerHeight);
+	}
+
+	function onPointerDown(e) {
+		mousedown = true;
+		const dom = renderer.domElement;
+		mouseCoords.set((e.clientX / dom.clientWidth) * 2 - 1, -(e.clientY / dom.clientHeight) * 2 + 1);
+		if (meshRay) {
+			raycaster.setFromCamera(mouseCoords, camera);
+			const intersects = raycaster.intersectObject(meshRay);
+			if (intersects.length > 0) sunTargetPos.copy(intersects[0].point);
+		}
+	}
+	function onPointerUp() { mousedown = false; }
+
+	function onPointerMove(event) {
+		const dom = renderer.domElement;
+		mouseCoords.set((event.clientX / dom.clientWidth) * 2 - 1, -(event.clientY / dom.clientHeight) * 2 + 1);
+		if (meshRay) {
+			raycaster.setFromCamera(mouseCoords, camera);
+			const intersects = raycaster.intersectObject(meshRay);
+			if (intersects.length > 0) sunTargetPos.copy(intersects[0].point);
+		}
+	}
+
+	function updateTouchesUniforms() {
+		if (!heightmapVariable || !heightmapVariable.material) return;
+		const uniforms = heightmapVariable.material.uniforms;
+
+		// age mobile splashes and imprints
+		for (let i = mobileSplashes.length - 1; i >= 0; i--) {
+			mobileSplashes[i].life -= (1/60);
+			if (mobileSplashes[i].life <= 0) mobileSplashes.splice(i, 1);
+		}
+		for (let i = handImprints.length - 1; i >= 0; i--) {
+			handImprints[i].life -= (1/60);
+			if (handImprints[i].life <= 0) handImprints.splice(i, 1);
+		}
+
+		// reduce frozen timer
+		if (frozenTimer > 0) {
+			frozenTimer -= (1/60);
+			if (frozenTimer <= 0) {
+				frozenTimer = 0;
+				frozenTouches = null;
+			}
+		}
+
+		let sourceArr = detectedTouches;
+		// if we have frozenTouches (imprint), use them instead of live detection
+		if (frozenTouches && frozenTouches.length > 0) {
+			sourceArr = frozenTouches;
+		} else if ((mobileSplashes.length > 0) && (isMobile || !hands)) {
+			sourceArr = [];
+			for (let i = 0; i < mobileSplashes.length && sourceArr.length < MAX_TOUCHES; i++) {
+				sourceArr.push(mobileSplashes[i].pos);
+			}
+		}
+
+		// combined = source + imprints
+		const combined = [];
+		for (let i = 0; i < sourceArr.length && combined.length < MAX_TOUCHES; i++) combined.push(sourceArr[i]);
+		for (let i = 0; i < handImprints.length && combined.length < MAX_TOUCHES; i++) combined.push(handImprints[i].pos);
+
+		const arr = uniforms['touches'].value;
+		const maxT = arr.length;
+		const count = Math.min((combined && combined.length) ? combined.length : 0, maxT, MAX_TOUCHES);
+		for (let i = 0; i < maxT; i++) {
+			if (i < count) {
+				arr[i].x = combined[i].x;
+				arr[i].y = combined[i].z;
+			} else {
+				arr[i].x = 10000;
+				arr[i].y = 10000;
+			}
+		}
+		uniforms['touchCount'].value = count;
+	}
+
+	function startHands() {
+		if (hands) return;
+		hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+		hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.4 });
+		hands.onResults(onHandsResults);
+		handsCamera = new Camera(videoElement, { onFrame: async () => { await hands.send({ image: videoElement }); }, width: 640, height: 480 });
+		handsCamera.start();
+	}
+
+	/* compute fraction of open fingers (0..1) */
+	function computeHandOpenFraction(handLandmarks) {
+		const palmIdx = [0,5,9,13,17];
+		let px = 0, py = 0, pc = 0;
+		for (let i=0;i<palmIdx.length;i++){
+			const p = handLandmarks[palmIdx[i]];
+			if (!p) continue;
+			px += p.x; py += p.y; pc++;
+		}
+		if (pc === 0) return 0;
+		px /= pc; py /= pc;
+		const tips = [4,8,12,16,20];
+		let openCount = 0;
+		for (let t=0;t<tips.length;t++){
+			const lm = handLandmarks[tips[t]];
+			if (!lm) continue;
+			const dx = lm.x - px, dy = lm.y - py;
+			const d = Math.sqrt(dx*dx + dy*dy);
+			// require wider spread than before
+			if (d > 0.14) openCount++;
+		}
+		return openCount / 5.0;
+	}
+
+	function onHandsResults(results) {
+		detectedTouches.length = 0;
+		avgHandDistance = null;
+		avgHandZ = null;
+		avgHandSpread = null;
+		avgHandOpen = 0.0;
+		avgHandPos = null;
+		if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+			// clear tip history when no hands
+			handTipHistory.length = 0;
+			return;
+		}
+		const candidates = [];
+		const allLandmarkNDCs = [];
+		let openSum = 0, handsFound = 0;
+
+		if (USE_FULL_LANDMARKS) {
+			for (let h = 0; h < results.multiHandLandmarks.length; h++) {
+				const lm = results.multiHandLandmarks[h];
+				if (!lm) continue;
+				handsFound++;
+				openSum += computeHandOpenFraction(lm);
+
+				// compute tip centroid in image coords for stability tracking
+				const tips = [4,8,12,16,20];
+				let tx=0, ty=0, tcount=0;
+				for (let ti=0; ti<tips.length; ti++){
+					const pt = lm[tips[ti]];
+					if (!pt) continue;
+					tx += pt.x; ty += pt.y; tcount++;
+				}
+				if (tcount>0) {
+					tx/=tcount; ty/=tcount;
+					handTipHistory.push({ t: performance.now()*0.001, x: tx, y: ty });
+				}
+
+				for (let idx = 0; idx < lm.length; idx++) {
+					const l = lm[idx];
+					if (!l) continue;
+					allLandmarkNDCs.push({ x: l.x, y: l.y });
+					const ndcX = -((l.x * 2.0) - 1.0);
+					const ndcY = ((l.y * 2.0) - 1.0);
+					_tmpNdc.set(ndcX, ndcY, 0.5);
+					_tmpNdc.unproject(camera);
+					_tmpDir.copy(_tmpNdc).sub(camera.position).normalize();
+					if (Math.abs(_tmpDir.y) < 1e-5) continue;
+					const t = - (camera.position.y) / _tmpDir.y;
+					if (t <= 0) continue;
+					_tmpWorld.copy(_tmpDir).multiplyScalar(t).add(camera.position);
+					const dist = camera.position.distanceTo(_tmpWorld);
+					candidates.push({ point: _tmpWorld.clone(), dist: dist, zProxy: l.z || 0 });
+				}
+			}
+		} else {
+			// fallback not normally used
+			for (let h = 0; h < results.multiHandLandmarks.length; h++) {
+				const lm = results.multiHandLandmarks[h];
+				if (!lm) continue;
+				handsFound++;
+				openSum += computeHandOpenFraction(lm);
+				for (let fg = 0; fg < fingerJointGroups.length; fg++) {
+					const joints = fingerJointGroups[fg];
+					let sx=0, sy=0, sz=0, found=0;
+					for (let j=0;j<joints.length;j++) { const idx=joints[j]; const l=lm[idx]; if(!l) continue; sx+=l.x; sy+=l.y; sz+=l.z||0; found++; }
+					if (!found) continue;
+					const avgX = sx/found, avgY = sy/found, avgZ = sz/found;
+					allLandmarkNDCs.push({ x: avgX, y: avgY });
+					const ndcX = -((avgX * 2.0) - 1.0);
+					const ndcY = ((avgY * 2.0) - 1.0);
+					_tmpNdc.set(ndcX, ndcY, 0.5);
+					_tmpNdc.unproject(camera);
+					_tmpDir.copy(_tmpNdc).sub(camera.position).normalize();
+					if (Math.abs(_tmpDir.y) < 1e-5) continue;
+					const t = - (camera.position.y) / _tmpDir.y;
+					if (t <= 0) continue;
+					_tmpWorld.copy(_tmpDir).multiplyScalar(t).add(camera.position);
+					const dist = camera.position.distanceTo(_tmpWorld);
+					candidates.push({ point: _tmpWorld.clone(), dist: dist, zProxy: avgZ });
+				}
+			}
+		}
+
+		// trim tip history window to HAND_LOCK_HOLD seconds
+		const nowS = performance.now()*0.001;
+		while (handTipHistory.length && (nowS - handTipHistory[0].t) > HAND_LOCK_HOLD) handTipHistory.shift();
+
+		// compute spread from allLandmarkNDCs
+		if (allLandmarkNDCs.length > 0) {
+			let cx = 0, cy = 0;
+			for (let i=0;i<allLandmarkNDCs.length;i++){ cx += allLandmarkNDCs[i].x; cy += allLandmarkNDCs[i].y; }
+			cx /= allLandmarkNDCs.length; cy /= allLandmarkNDCs.length;
+			let sumd = 0;
+			for (let i=0;i<allLandmarkNDCs.length;i++){
+				const dx = allLandmarkNDCs[i].x - cx, dy = allLandmarkNDCs[i].y - cy;
+				sumd += Math.sqrt(dx*dx + dy*dy);
+			}
+			avgHandSpread = sumd / allLandmarkNDCs.length;
+		}
+		if (handsFound > 0) avgHandOpen = openSum / handsFound;
+		else avgHandOpen = 0.0;
+
+		if (candidates.length === 0) return;
+		candidates.sort((a,b)=>a.dist-b.dist);
+		const keep = candidates.slice(0, MAX_TOUCHES);
+		let sumDist=0, sumZ=0; const avgPt = new THREE.Vector3();
+		for (let i=0;i<keep.length;i++){
+			detectedTouches.push(keep[i].point.clone());
+			sumDist+=keep[i].dist;
+			sumZ += (keep[i].zProxy!==undefined ? keep[i].zProxy : 0);
+			avgPt.add(keep[i].point);
+		}
+		avgPt.divideScalar(keep.length);
+		avgHandDistance = sumDist / keep.length;
+		avgHandZ = sumZ / keep.length;
+		avgHandPos = avgPt.clone();
+		sunTargetPos.copy(avgPt);
+		if (!lastAvgHandPos && avgHandPos) lastAvgHandPos = avgHandPos.clone();
+	}
+
+	/* motion sensor helpers (unchanged) */
+	async function enableMotionSensors() {
+		if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+			try {
+				const res = await DeviceMotionEvent.requestPermission();
+				if (res !== 'granted') return;
+			} catch (e) { console.warn('motion permission request failed', e); return; }
+		}
+		window.addEventListener('devicemotion', onDeviceMotion, { passive: true });
+		window.addEventListener('deviceorientation', onDeviceOrientation, { passive: true });
+	}
+	let lastDeviceOrientation = { alpha:0, beta:0, gamma:0 };
+	function onDeviceOrientation(e) {
+		lastDeviceOrientation.alpha = e.alpha || 0;
+		lastDeviceOrientation.beta = e.beta || 0;
+		lastDeviceOrientation.gamma = e.gamma || 0;
+		const pos = deviceTiltToWorld(lastDeviceOrientation);
+		sunTargetPos.set(pos.x, 0, pos.z);
+	}
+	function deviceTiltToWorld(orient) {
+		const gamma = orient.gamma || 0;
+		const beta = orient.beta || 0;
+		const nx = Math.max(-1, Math.min(1, gamma / 90));
+		const nz = Math.max(-1, Math.min(1, beta / 90));
+		const x = nx * BOUNDS_HALF;
+		const z = -nz * BOUNDS_HALF;
+		return { x, z };
+	}
+	function onDeviceMotion(e) {
+		const now = performance.now();
+		const dt = Math.max(0.001, (now - lastAccelTime) * 0.001);
+		lastAccelTime = now;
+		const acc = e.accelerationIncludingGravity || e.acceleration || { x:0,y:0,z:0 };
+		const dx = acc.x - lastAccel.x, dy = acc.y - lastAccel.y, dz = acc.z - lastAccel.z;
+		const mag = Math.sqrt(dx*dx + dy*dy + dz*dz);
+		lastAccel.x = acc.x; lastAccel.y = acc.y; lastAccel.z = acc.z;
+
+		const threshold = MOBILE_SHAKE_THRESHOLD;
+		if (mag > threshold) {
+			const center = deviceTiltToWorld(lastDeviceOrientation);
+			const clusterCount = 3;
+			const jitterRadius = 0.25;
+			for (let i = 0; i < clusterCount; i++) {
+				const angle = Math.random() * Math.PI * 2;
+				const r = Math.random() * jitterRadius * (0.5 + 0.5 * (i / clusterCount));
+				const sx = Math.max(-BOUNDS_HALF, Math.min(BOUNDS_HALF, center.x + Math.cos(angle) * r));
+				const sz = Math.max(-BOUNDS_HALF, Math.min(BOUNDS_HALF, center.z + Math.sin(angle) * r));
+				mobileSplashes.push({ pos: new THREE.Vector3(sx, 0, sz), life: MOBILE_SPLASH_LIFE });
+			}
+			if (mobileSplashes.length > MAX_TOUCHES) mobileSplashes.splice(0, mobileSplashes.length - MAX_TOUCHES);
+
+			const sensitivity = effectController.mobileSensitivity;
+			const added = Math.min(1.0, (mag - threshold) * 0.55 * sensitivity);
+			mobileEnergy = Math.min(1.0, mobileEnergy + added);
+
+			sunTargetPos.set(center.x, 0, center.z);
+		}
+	}
+
+	/* trigger the pulse (dramatic bump + flash + imprint freeze) */
+	function triggerHandLockPulse(centerWorld) {
+		// add imprints (cluster)
+		const clusterCount = 14;
+		const jitterRadius = 0.45;
+		for (let i = 0; i < clusterCount; i++) {
+			const angle = Math.random() * Math.PI * 2;
+			const r = Math.random() * jitterRadius;
+			const sx = Math.max(-BOUNDS_HALF, Math.min(BOUNDS_HALF, centerWorld.x + Math.cos(angle) * r));
+			const sz = Math.max(-BOUNDS_HALF, Math.min(BOUNDS_HALF, centerWorld.z + Math.sin(angle) * r));
+			handImprints.push({ pos: new THREE.Vector3(sx, 0, sz), life: HAND_IMPRINT_LIFE });
+		}
+
+		// freeze current detectedTouches briefly (so the water keeps shape)
+		frozenTouches = detectedTouches.map(p => p.clone());
+		frozenTimer = Math.min(1.2, HAND_IMPRINT_LIFE * 0.6); // short freeze <= ~1.2s
+
+		// create additional mobile-like splashes to simulate huge wobble
+		for (let i = 0; i < 8; i++) {
+			const angle = Math.random() * Math.PI * 2;
+			const r = 0.5 * Math.random();
+			const sx = Math.max(-BOUNDS_HALF, Math.min(BOUNDS_HALF, centerWorld.x + Math.cos(angle) * r));
+			const sz = Math.max(-BOUNDS_HALF, Math.min(BOUNDS_HALF, centerWorld.z + Math.sin(angle) * r));
+			mobileSplashes.push({ pos: new THREE.Vector3(sx, 0, sz), life: MOBILE_SPLASH_LIFE * 1.1 });
+		}
+		if (mobileSplashes.length > MAX_TOUCHES) mobileSplashes.splice(0, mobileSplashes.length - MAX_TOUCHES);
+
+		// flash
+		rectLight2.intensity = HAND_LOCK_FLASH_INTENSITY;
+		// pump mobileEnergy and clickPower so depth increases massively for short time
+		mobileEnergy = 1.0;
+		clickPower = 1.0;
+
+		handLocked = true;
+		handLockCooldown = HAND_LOCK_COOLDOWN;
+	}
+
+	/* main raycast logic + hand lock evaluation */
+	function raycast(dt) {
+		if (!heightmapVariable || !heightmapVariable.material) return;
+		const uniforms = heightmapVariable.material.uniforms;
+
+		updateTouchesUniforms();
+
+		if (mousedown && detectedTouches.length === 0) {
+			uniforms['mousePos'].value.set(sunTargetPos.x, sunTargetPos.z);
+		} else {
+			uniforms['mousePos'].value.set(10000, 10000);
+		}
+
+		if (mousedown) {
+			clickPower += dt * clickGrowRate;
+			if (clickPower > 1.0) clickPower = 1.0;
+		} else {
+			clickPower -= dt * clickDecayRate;
+			if (clickPower < 0.0) clickPower = 0.0;
+		}
+
+		let proximityNorm = 0.0;
+		if (avgHandDistance !== null) {
+			const minD = 0.5, maxD = 6.0;
+			const d = avgHandDistance;
+			proximityNorm = (maxD - d) / (maxD - minD);
+			proximityNorm = Math.max(0.0, Math.min(1.0, proximityNorm));
+		}
+		let closeness = 0.0;
+		if (avgHandZ !== null) {
+			const zClose = -0.4, zFar = 0.2;
+			closeness = (zFar - avgHandZ) / (zFar - zClose);
+			closeness = Math.max(0.0, Math.min(1.0, closeness));
+		}
+
+		const desiredPos = sunTargetPos.clone().add(sunBaseOffset);
+		sun.position.lerp(desiredPos, 0.22);
+		sun.lookAt(sunTargetPos);
+
+		const handMultiplier = (avgHandDistance !== null) ? effectController.handLightMultiplier : 1.0;
+		const baseIntensity = 0.0;
+		const proximityBoost = proximityNorm * 0.9 * handMultiplier;
+		const closenessBoost = closeness * 1.2 * (avgHandDistance !== null ? effectController.handLightMultiplier : 1.0);
+		const clickBoost = clickPower * clickIntensityBoost * (avgHandDistance !== null ? effectController.handLightMultiplier : 1.0);
+		const mobileLightBoost = mobileEnergy * (effectController.mobileLightFactor * 1.5);
+
+		const targetIntensity = baseIntensity + proximityBoost + closenessBoost + clickBoost + mobileLightBoost;
+		sun.intensity = THREE.MathUtils.lerp(sun.intensity, targetIntensity, 0.18);
+
+		/* -------- Hand lock evaluation (STRICTER) -------- */
+		// compute tip stability in the handTipHistory window:
+		let tipStable = false;
+		if (handTipHistory.length >= 2) {
+			let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+			for (let i=0;i<handTipHistory.length;i++){
+				minX = Math.min(minX, handTipHistory[i].x);
+				maxX = Math.max(maxX, handTipHistory[i].x);
+				minY = Math.min(minY, handTipHistory[i].y);
+				maxY = Math.max(maxY, handTipHistory[i].y);
+			}
+			const dx = maxX - minX, dy = maxY - minY;
+			const maxDist = Math.sqrt(dx*dx + dy*dy);
+			tipStable = maxDist < HAND_STABILITY_MAX_DIST;
+		}
+
+		if (avgHandPos) {
+			if (!lastAvgHandPos) lastAvgHandPos = avgHandPos.clone();
+			const moveDist = lastAvgHandPos.distanceTo(avgHandPos);
+			const normalizedMove = moveDist / BOUNDS;
+			const spread = avgHandSpread !== null ? avgHandSpread : 0;
+			const openFraction = avgHandOpen !== null ? avgHandOpen : 0;
+
+			// stricter: require small movement AND tip stability AND wide spread AND fingers quite open AND not on cooldown
+			const canArm = (normalizedMove < HAND_MOVE_THRESHOLD) && (spread > HAND_SPREAD_THRESHOLD) && (openFraction >= HAND_OPEN_FRACTION) && tipStable && (handLockCooldown <= 0);
+
+			if (canArm) {
+				handStabilityTimer += dt;
+				handLockProgress = Math.min(1.0, handStabilityTimer / HAND_LOCK_HOLD);
+
+				// exponential-like ease: slow start, accelerate near the end
+				const eased = Math.pow(handLockProgress, 2.3);
+
+				// compute ramp target (more visible). clamp to a reasonable max
+				const rampMax = Math.min(6.0, rectLight2BaseIntensity * 12.0);
+				const targetSlide = rectLight2BaseIntensity + (rampMax - rectLight2BaseIntensity) * eased;
+				// lerp rectLight2 intensity to target slide (gentle)
+				rectLight2.intensity = THREE.MathUtils.lerp(rectLight2.intensity, targetSlide, 0.12);
+
+				// slightly increase hand depth while arming (subtle)
+				effectController.mouseDeepHand = THREE.MathUtils.lerp(effectController.mouseDeepHand, 0.0028, 0.03);
+
+				// when fully held, trigger pulse
+				if (handStabilityTimer >= HAND_LOCK_HOLD && !handLocked) {
+					triggerHandLockPulse(avgHandPos);
+					handStabilityTimer = 0;
+					handLockProgress = 0;
+					// clear tip history after firing to avoid immediate retrigger
+					handTipHistory.length = 0;
+				}
+			} else {
+				// immediate fallback: reset progress and drop rectLight2 quickly to base
+				handStabilityTimer = 0;
+				handLockProgress = Math.max(0, handLockProgress - dt * 3.0);
+				// if we moved out, drop intensity fast so user sees immediate feedback
+				if (!handLocked) rectLight2.intensity = THREE.MathUtils.lerp(rectLight2.intensity, rectLight2BaseIntensity, 0.45);
+				// restore base hand depth quickly (so imprint doesn't feel like a bug)
+				effectController.mouseDeepHand = THREE.MathUtils.lerp(effectController.mouseDeepHand, 0.0012, 0.18);
+			}
+			lastAvgHandPos.copy(avgHandPos);
+		} else {
+			// no hands: reset / decay
+			handStabilityTimer = 0;
+			handLockProgress = Math.max(0, handLockProgress - dt * 3.0);
+			if (!handLocked) rectLight2.intensity = THREE.MathUtils.lerp(rectLight2.intensity, rectLight2BaseIntensity, 0.22);
+			effectController.mouseDeepHand = THREE.MathUtils.lerp(effectController.mouseDeepHand, 0.0012, 0.12);
+			handTipHistory.length = 0;
+		}
+
+		// handle flash decay & cooldown for lock
+		if (handLocked) {
+			// decay rectLight2 back to base quickly but smoothly
+			rectLight2.intensity = THREE.MathUtils.lerp(rectLight2.intensity, rectLight2BaseIntensity, dt * 4.0);
+			// while "locked", keep mouseDeepHand elevated a bit (imprint feeling)
+			effectController.mouseDeepHand = THREE.MathUtils.lerp(effectController.mouseDeepHand, 0.0038, dt * 1.8);
+
+			// when rectLight2 is nearly at base, end locked state and allow short cooldown
+			if (Math.abs(rectLight2.intensity - rectLight2BaseIntensity) < 0.08) {
+				handLocked = false;
+				handLockCooldown = HAND_LOCK_COOLDOWN;
+			}
+		}
+		if (handLockCooldown > 0) handLockCooldown -= dt;
+
+		/* -------- Depth and shader uniform updates (cap + smoothing) -------- */
+		const baseDeepClick = effectController.mouseDeepClick;
+		const baseDeepHand = effectController.mouseDeepHand;
+		const handDepthFactor = 1.0 + closeness * effectController.handDeepScale;
+		const mobileDepthMult = 1.0 + mobileEnergy * (effectController.mobileSizeFactor * 1.2);
+
+		let boostedDeepHand = baseDeepHand * (1.0 + proximityNorm * 3.0 + clickPower * 5.0) * handDepthFactor * mobileDepthMult;
+
+		const MAX_NORMAL_DEEP = 0.02;
+		const MAX_PULSE_MULT = 3.2;
+		if (mobileEnergy > 0.3 || handLocked) {
+			boostedDeepHand = Math.min(baseDeepHand * MAX_PULSE_MULT * (1.0 + proximityNorm * 2.0), boostedDeepHand * 1.6);
+		} else {
+			boostedDeepHand = Math.min(boostedDeepHand, MAX_NORMAL_DEEP);
+		}
+		if (uniforms['deepHand']) uniforms['deepHand'].value = THREE.MathUtils.lerp(uniforms['deepHand'].value || 0, boostedDeepHand, 0.16);
+
+		const boostedDeepClick = baseDeepClick * (1.0 + clickPower * 5.0);
+		if (uniforms['deepClick']) uniforms['deepClick'].value = THREE.MathUtils.lerp(uniforms['deepClick'].value || 0, boostedDeepClick, 0.12);
+
+		const mobileSizeMult = 1.0 + mobileEnergy * (effectController.mobileSizeFactor);
+		const tempHandSize = effectController.mouseSizeHand * mobileSizeMult;
+		if (uniforms['mouseSizeClick']) uniforms['mouseSizeClick'].value = effectController.mouseSizeClick;
+		if (uniforms['mouseSizeHand']) uniforms['mouseSizeHand'].value = tempHandSize;
+
+		mobileEnergy -= dt * 0.9;
+		if (mobileEnergy < 0) mobileEnergy = 0;
+
+		if (ctrlMouseDeepHand) ctrlMouseDeepHand.setValue(effectController.mouseDeepHand);
+		if (ctrlMouseDeepClick) ctrlMouseDeepClick.setValue(effectController.mouseDeepClick);
+	}
+
+	function animate() {
+		render();
+		stats.update();
+	}
+
+	function render() {
+		const now = performance.now();
+		const dt = Math.min(0.1, (now - lastTime) * 0.001);
+		lastTime = now;
+
+		raycast(dt);
+		frame++;
+
+		if (heightmapVariable && heightmapVariable.material && heightmapVariable.material.uniforms) {
+			heightmapVariable.material.uniforms.time && (heightmapVariable.material.uniforms.time.value = performance.now() * 0.001);
+			heightmapVariable.material.uniforms.viscosity.value = effectController.viscosity;
+		}
+
+		if ((frame % computeEveryNFrames) === 0) {
+			gpuCompute.compute();
+			tmpHeightmap = gpuCompute.getCurrentRenderTarget(heightmapVariable).texture;
+			if (waterMesh) waterMesh.material.heightmap = tmpHeightmap;
+		}
+
+		renderer.render(scene, camera);
+	}
+
+	/* ---------- WaterMaterial ---------- */
+	class WaterMaterial extends THREE.MeshStandardMaterial {
+		constructor(parameters) {
+			super();
+			this.defines = {
+				'STANDARD': '',
+				'USE_UV': '',
+				'WIDTH': WIDTH.toFixed(1),
+				'BOUNDS': BOUNDS.toFixed(1)
+			};
+			this.extra = {};
+			this.addParameter('heightmap', null);
+			this.setValues(parameters);
+		}
+		addParameter(name, value) {
+			this.extra[name] = value;
+			Object.defineProperty(this, name, {
+				get: () => (this.extra[name]),
+				set: (v) => {
+					this.extra[name] = v;
+					if (this.userData.shader) this.userData.shader.uniforms[name].value = this.extra[name];
+				}
+			});
+		}
+		onBeforeCompile(shader) {
+			for (const name in this.extra) shader.uniforms[name] = { value: this.extra[name] };
+			shader.vertexShader = shader.vertexShader.replace('#include <common>', shaderChange.common);
+			shader.vertexShader = shader.vertexShader.replace('#include <beginnormal_vertex>', shaderChange.beginnormal_vertex);
+			shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', shaderChange.begin_vertex);
+			this.userData.shader = shader;
+		}
+	}
+</script>
+</body>
+</html>
